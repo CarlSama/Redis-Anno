@@ -309,6 +309,9 @@ void listTypeConvert(robj *subject, int enc) {
  * List Commands
  *----------------------------------------------------------------------------*/
 
+/*
+ *  将value压入list，并标记list的key到readys_key
+ */
 void pushGenericCommand(redisClient *c, int where) {
     int j, waiting = 0, pushed = 0;
 	// 查找对象
@@ -323,8 +326,9 @@ void pushGenericCommand(redisClient *c, int where) {
         return;
     }
 
-	// 通知客户端
-    if (may_have_waiting_clients) signalListAsReady(c,c->argv[1]);
+	// 加入到readys_key列表 
+    if (may_have_waiting_clients) 
+		signalListAsReady(c,c->argv[1]);
 
     for (j = 2; j < c->argc; j++) {
         c->argv[j] = tryObjectEncoding(c->argv[j]);
@@ -886,30 +890,31 @@ void unblockClientWaitingData(redisClient *c) {
     listAddNodeTail(server.unblocked_clients,c);
 }
 
-/* If the specified key has clients blocked waiting for list pushes, this
- * function will put the key reference into the server.ready_keys list.
- * Note that db->ready_keys is an hash table that allows us to avoid putting
- * the same key again and again in the list in case of multiple pushes
- * made by a script or in the context of MULTI/EXEC.
- *
- * The list will be finally processed by handleClientsBlockedOnLists() */
 /*
- * key中增加内容时，提醒阻塞的client
+ * key中增加内容时，提醒阻塞于此key的client
+ *
+ * 将key添加到ready_keys列表中
  */
 void signalListAsReady(redisClient *c, robj *key) {
     readyList *rl;
 
 	// 是否有client阻塞于此key
+	// blocking_keys:   dict<key, list of clients>
     if (dictFind(c->db->blocking_keys,key) == NULL) return;
 
 	// key是否已经通知过了
     if (dictFind(c->db->ready_keys,key) != NULL) return;
 
 	// 将此key添加到server的ready队列
+	// typedef struct readyList {
+	//		redisDb *db;
+	//		robj *key;
+	// }
     rl = zmalloc(sizeof(*rl));
     rl->key = key;
     rl->db = c->db;
     incrRefCount(key);
+	// 节点的value为readyList
     listAddNodeTail(server.ready_keys,rl);
 
 	// 添加已通知信息
@@ -936,12 +941,24 @@ void signalListAsReady(redisClient *c, robj *key) {
  * should be undone as the client was not served: This only happens for
  * BRPOPLPUSH that fails to push the value to the destination key as it is
  * of the wrong type. */
+/*
+ * 函数对被阻塞的客户端client、造成阻塞的key、key所在db以及一个值value和一个位置where执行以下操作：
+ * 1）将value提供给client
+ * 2) 如果dstKey不为空（brpoplpush),将value也推入destKey指定的列表
+ * 3）将brpop，blpop和lpush传播到aof和同步节点
+ *
+ * where为redis_tail或者redis_head，用于识别value是从哪个地方pop出来，用于传播blpop和brpop。
+ *
+ * 执行成功，返回REDIS_OK
+ * 执行失败，返回REDIS_ERR,让redis撤销对目标节点的pop操作
+ * 失败的情况只会出现在BRPOPLPUSH命令: POP列表成功，却发现想PUSH的目标不是列表
+ */
 int serveClientBlockedOnList(redisClient *receiver, robj *key, robj *dstkey, redisDb *db, robj *value, int where)
 {
     robj *argv[3];
 
     if (dstkey == NULL) {
-        /* Propagate the [LR]POP operation. */
+		// 发散LPOP/RPOP
         argv[0] = (where == REDIS_HEAD) ? shared.lpop :
                                           shared.rpop;
         argv[1] = key;
@@ -986,16 +1003,13 @@ int serveClientBlockedOnList(redisClient *receiver, robj *key, robj *dstkey, red
     return REDIS_OK;
 }
 
-/* This function should be called by Redis every time a single command,
- * a MULTI/EXEC block, or a Lua script, terminated its execution after
- * being called by a client.
+/*
+ * redis每次处理command、MULTI/EXEC、Lua脚本末尾被调用
  *
- * All the keys with at least one client blocked that received at least
- * one new element via some PUSH operation are accumulated into
- * the server.ready_keys list. This function will run the list and will
- * serve clients accordingly. Note that the function will iterate again and
- * again as a result of serving BRPOPLPUSH we can have new blocking clients
- * to serve because of the PUSH side of BRPOPLPUSH. */
+ * 用于给阻塞于某个key的client返回当前被压入的值。
+ *
+ * 函数对一遍遍的迭代执行，因此它在brpoplpush命令也可以正常获取到正确的新被阻塞的客户端
+ */
 void handleClientsBlockedOnLists(void) {
     while(listLength(server.ready_keys) != 0) {
         list *l;
@@ -1004,37 +1018,44 @@ void handleClientsBlockedOnLists(void) {
          * locally. This way as we run the old list we are free to call
          * signalListAsReady() that may push new elements in server.ready_keys
          * when handling clients blocked into BRPOPLPUSH. */
+		// 备份ready_keys并重置
         l = server.ready_keys;
         server.ready_keys = listCreate();
 
+		// 遍历ready_keys
         while(listLength(l) != 0) {
             listNode *ln = listFirst(l);
             readyList *rl = ln->value;
 
             /* First of all remove this key from db->ready_keys so that
              * we can safely call signalListAsReady() against this key. */
+			// db->ready_keys中删除key
             dictDelete(rl->db->ready_keys,rl->key);
 
             /* If the key exists and it's a list, serve blocked clients
              * with data. */
+			// 取出key对象
             robj *o = lookupKeyWrite(rl->db,rl->key);
+			// 对象不为空&&列表
             if (o != NULL && o->type == REDIS_LIST) {
                 dictEntry *de;
 
-                /* We serve clients in the same order they blocked for
-                 * this key, from the first blocked to the last. */
+				// 取出阻塞于此key的客户端
                 de = dictFind(rl->db->blocking_keys,rl->key);
                 if (de) {
                     list *clients = dictGetVal(de);
                     int numclients = listLength(clients);
 
+					// 遍历被阻塞的客户端
                     while(numclients--) {
                         listNode *clientnode = listFirst(clients);
                         redisClient *receiver = clientnode->value;
                         robj *dstkey = receiver->bpop.target;
+						// 弹出的位置
                         int where = (receiver->lastcmd &&
                                      receiver->lastcmd->proc == blpopCommand) ?
                                     REDIS_HEAD : REDIS_TAIL;
+						// 弹出的值
                         robj *value = listTypePop(o,where);
 
                         if (value) {
@@ -1042,14 +1063,15 @@ void handleClientsBlockedOnLists(void) {
                              * freed by the next unblockClientWaitingData()
                              * call. */
                             if (dstkey) incrRefCount(dstkey);
+							// 取消阻塞状态
                             unblockClientWaitingData(receiver);
 
+							// 将value添加到造成client阻塞的key上
                             if (serveClientBlockedOnList(receiver,
                                 rl->key,dstkey,rl->db,value,
                                 where) == REDIS_ERR)
                             {
-                                /* If we failed serving the client we need
-                                 * to also undo the POP operation. */
+									// 处理失败，重新添加回去
                                     listTypePush(o,value,where);
                             }
 

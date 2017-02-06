@@ -1616,13 +1616,12 @@ struct redisCommand *lookupCommandOrOriginal(sds name) {
     return cmd;
 }
 
-/* Propagate the specified command (in the context of the specified database id)
- * to AOF and Slaves.
+/*
+ * 将command传播到AFO和Slaves
  *
- * flags are an xor between:
- * + REDIS_PROPAGATE_NONE (no propagation of command at all)
- * + REDIS_PROPAGATE_AOF (propagate into the AOF file if is enabled)
- * + REDIS_PROPAGATE_REPL (propagate into the replication link)
+ * REDIS_PROPAGATE_NONE: 不执行
+ * REDIS_PROPAGATE_AOF: AOF
+ * REDIS_PROPAGATE_REPL: Slaves
  */
 void propagate(struct redisCommand *cmd, int dbid, robj **argv, int argc,
                int flags)
@@ -1834,6 +1833,7 @@ int processCommand(redisClient *c) {
     } else {
         call(c,REDIS_CALL_FULL);
         if (listLength(server.ready_keys))
+			// 处理阻塞被满足的情况
             handleClientsBlockedOnLists();
     }
     return REDIS_OK;
