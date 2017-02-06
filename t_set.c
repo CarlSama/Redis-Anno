@@ -565,6 +565,9 @@ int qsortCompareSetsByCardinality(const void *s1, const void *s2) {
     return setTypeSize(*(robj**)s1)-setTypeSize(*(robj**)s2);
 }
 
+/*
+ * 集合求交集
+ */
 void sinterGenericCommand(redisClient *c, robj **setkeys, unsigned long setnum, robj *dstkey) {
     robj **sets = zmalloc(sizeof(robj*)*setnum);
     setTypeIterator *si;
@@ -574,6 +577,7 @@ void sinterGenericCommand(redisClient *c, robj **setkeys, unsigned long setnum, 
     unsigned long j, cardinality = 0;
     int encoding;
 
+	// 将所有集合的指针保存到sets数组
     for (j = 0; j < setnum; j++) {
         robj *setobj = dstkey ?
             lookupKeyWrite(c->db,setkeys[j]) :
@@ -597,8 +601,8 @@ void sinterGenericCommand(redisClient *c, robj **setkeys, unsigned long setnum, 
         }
         sets[j] = setobj;
     }
-    /* Sort sets from the smallest to largest, this will improve our
-     * algorithm's performance */
+
+	// 将集合从少到多排序
     qsort(sets,setnum,sizeof(robj*),qsortCompareSetsByCardinality);
 
     /* The first thing we should output is the total number of elements...
@@ -618,6 +622,7 @@ void sinterGenericCommand(redisClient *c, robj **setkeys, unsigned long setnum, 
      * the element against all the other sets, if at least one set does
      * not include the element it is discarded */
     si = setTypeInitIterator(sets[0]);
+	// 遍历sets[0], 将每个元素都和sets[1~n]做交集
     while((encoding = setTypeNext(si,&eleobj,&intobj)) != -1) {
         for (j = 1; j < setnum; j++) {
             if (sets[j] == sets[0]) continue;
@@ -655,7 +660,7 @@ void sinterGenericCommand(redisClient *c, robj **setkeys, unsigned long setnum, 
             }
         }
 
-        /* Only take action when all sets contain the member */
+		// sets[0~n]都包含
         if (j == setnum) {
             if (!dstkey) {
                 if (encoding == REDIS_ENCODING_HT)
@@ -695,10 +700,16 @@ void sinterGenericCommand(redisClient *c, robj **setkeys, unsigned long setnum, 
     zfree(sets);
 }
 
+/*
+ * SINTER KEY [KEY....]
+ */
 void sinterCommand(redisClient *c) {
     sinterGenericCommand(c,c->argv+1,c->argc-1,NULL);
 }
 
+/*
+ * SINTER DEST KEY [KEY ...]
+ */
 void sinterstoreCommand(redisClient *c) {
     sinterGenericCommand(c,c->argv+2,c->argc-2,c->argv[1]);
 }
@@ -713,6 +724,7 @@ void sunionDiffGenericCommand(redisClient *c, robj **setkeys, int setnum, robj *
     robj *ele, *dstset = NULL;
     int j, cardinality = 0;
 
+	// 将所有集合的指针保存到sets中
     for (j = 0; j < setnum; j++) {
         robj *setobj = dstkey ?
             lookupKeyWrite(c->db,setkeys[j]) :
@@ -742,10 +754,12 @@ void sunionDiffGenericCommand(redisClient *c, robj **setkeys, int setnum, robj *
         si = setTypeInitIterator(sets[j]);
         while((ele = setTypeNextObject(si)) != NULL) {
             if (op == REDIS_OP_UNION || j == 0) {
+				// UNION: 直接ADD
                 if (setTypeAdd(dstset,ele)) {
                     cardinality++;
                 }
             } else if (op == REDIS_OP_DIFF) {
+				// DIFF: 
                 if (setTypeRemove(dstset,ele)) {
                     cardinality--;
                 }
