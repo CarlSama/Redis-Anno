@@ -42,9 +42,10 @@
 #include "redis.h"
 #include "slowlog.h"
 
-/* Create a new slowlog entry.
- * Incrementing the ref count of all the objects retained is up to
- * this function. */
+/*
+ * 创建slow log节点
+ * 增加相应数据的引用技术
+ */
 slowlogEntry *slowlogCreateEntry(robj **argv, int argc, long long duration) {
     slowlogEntry *se = zmalloc(sizeof(*se));
     int j, slargc = argc;
@@ -53,15 +54,13 @@ slowlogEntry *slowlogCreateEntry(robj **argv, int argc, long long duration) {
     se->argc = slargc;
     se->argv = zmalloc(sizeof(robj*)*slargc);
     for (j = 0; j < slargc; j++) {
-        /* Logging too many arguments is a useless memory waste, so we stop
-         * at SLOWLOG_ENTRY_MAX_ARGC, but use the last argument to specify
-         * how many remaining arguments there were in the original command. */
+		// 避免记录太多
         if (slargc != argc && j == slargc-1) {
             se->argv[j] = createObject(REDIS_STRING,
                 sdscatprintf(sdsempty(),"... (%d more arguments)",
                 argc-slargc+1));
         } else {
-            /* Trim too long strings as well... */
+			// 避免过长记录
             if (argv[j]->type == REDIS_STRING &&
                 argv[j]->encoding == REDIS_ENCODING_RAW &&
                 sdslen(argv[j]->ptr) > SLOWLOG_ENTRY_MAX_STRING)
@@ -84,10 +83,9 @@ slowlogEntry *slowlogCreateEntry(robj **argv, int argc, long long duration) {
     return se;
 }
 
-/* Free a slow log entry. The argument is void so that the prototype of this
- * function matches the one of the 'free' method of adlist.c.
- *
- * This function will take care to release all the retained object. */
+/*
+ *  释放slow log节点
+ */
 void slowlogFreeEntry(void *septr) {
     slowlogEntry *se = septr;
     int j;
@@ -98,23 +96,27 @@ void slowlogFreeEntry(void *septr) {
     zfree(se);
 }
 
-/* Initialize the slow log. This function should be called a single time
- * at server startup. */
+/*
+ * slow log初始化, server初始化时被调用
+ */
 void slowlogInit(void) {
     server.slowlog = listCreate();
-    server.slowlog_entry_id = 0;
+    server.slowlog_entry_id = 0;			// 初始id
     listSetFreeMethod(server.slowlog,slowlogFreeEntry);
 }
 
-/* Push a new entry into the slow log.
- * This function will make sure to trim the slow log accordingly to the
- * configured max length. */
+/*
+ * 向slow log中插入新的记录
+ */
 void slowlogPushEntryIfNeeded(robj **argv, int argc, long long duration) {
-    if (server.slowlog_log_slower_than < 0) return; /* Slowlog disabled */
+	// 未打开慢查询记录
+    if (server.slowlog_log_slower_than < 0) return;
+
+	// 需要记录
     if (duration >= server.slowlog_log_slower_than)
         listAddNodeHead(server.slowlog,slowlogCreateEntry(argv,argc,duration));
 
-    /* Remove old entries if needed. */
+	// 记录个数限制
     while (listLength(server.slowlog) > server.slowlog_max_len)
         listDelNode(server.slowlog,listLast(server.slowlog));
 }
@@ -128,11 +130,14 @@ void slowlogReset(void) {
 /* The SLOWLOG command. Implements all the subcommands needed to handle the
  * Redis slow log. */
 void slowlogCommand(redisClient *c) {
+	// reset
     if (c->argc == 2 && !strcasecmp(c->argv[1]->ptr,"reset")) {
         slowlogReset();
         addReply(c,shared.ok);
+	// len
     } else if (c->argc == 2 && !strcasecmp(c->argv[1]->ptr,"len")) {
         addReplyLongLong(c,listLength(server.slowlog));
+	// get
     } else if ((c->argc == 2 || c->argc == 3) &&
                !strcasecmp(c->argv[1]->ptr,"get"))
     {

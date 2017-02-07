@@ -348,7 +348,7 @@ typedef struct redisDb {
     dict *expires;              /* Timeout of keys with a timeout set */
     dict *blocking_keys;        /* Keys with clients waiting for data (BLPOP) */
     dict *ready_keys;           /* Blocked keys that received a PUSH */
-    dict *watched_keys;         /* WATCHED keys for MULTI/EXEC CAS */
+    dict *watched_keys;         /* WATCHED keys for MULTI/EXEC CAS: key : list of clients */
     int id;
     long long avg_ttl;          /* Average TTL, just for stats */
 } redisDb;
@@ -556,10 +556,11 @@ struct redisServer {
     size_t stat_peak_memory;        /* Max used memory record */
     long long stat_fork_time;       /* Time needed to perform latest fork() */
     long long stat_rejected_conn;   /* Clients rejected because of maxclients */
-    list *slowlog;                  /* SLOWLOG list of commands */
-    long long slowlog_entry_id;     /* SLOWLOG current entry ID */
-    long long slowlog_log_slower_than; /* SLOWLOG time limit (to get logged) */
-    unsigned long slowlog_max_len;     /* SLOWLOG max number of items logged */
+
+    list *slowlog;						// 慢查询集合
+    long long slowlog_entry_id;			// 当前ID
+    long long slowlog_log_slower_than;	// 时间限制
+    unsigned long slowlog_max_len;		// 最大纪录数
     /* The following two are used to track instantaneous "load" in terms
      * of operations per second. */
     long long ops_sec_last_sample_time; /* Timestamp of last sample (in ms) */

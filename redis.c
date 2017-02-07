@@ -1496,6 +1496,7 @@ void initServer() {
     }
 
     scriptingInit();
+	// 初始化slowlog
     slowlogInit();
     bioInit();
 }

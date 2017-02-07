@@ -111,6 +111,9 @@ void execCommandPropagateMulti(redisClient *c) {
     decrRefCount(multistring);
 }
 
+/*
+ * EXEC
+ */
 void execCommand(redisClient *c) {
     int j;
     robj **orig_argv;
@@ -257,7 +260,9 @@ void unwatchAllKeys(redisClient *c) {
 }
 
 /*
- * key被修改，如果这个key被监视，让监视它的客户端执行EXEC失败
+ * key被修改!
+ *
+ * 如果这个key被监视，让监视它的客户端执行EXEC失败
  */
 void touchWatchedKey(redisDb *db, robj *key) {
     list *clients;
@@ -271,7 +276,7 @@ void touchWatchedKey(redisDb *db, robj *key) {
     clients = dictFetchValue(db->watched_keys, key);
     if (!clients) return;
 
-	// 将每个客户端的状态增加REDIS_DIRTY_CAS
+	// 将每个客户端的状态增加REDIS_DIRTY_CAS（事物安全性已被破坏）
     listRewind(clients,&li);
     while((ln = listNext(&li))) {
         redisClient *c = listNodeValue(ln);
